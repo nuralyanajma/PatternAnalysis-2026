@@ -14,3 +14,16 @@ class ConvBlock3D (nn.Module):
     def forward(self, x):
         return self.conv(x)
 
+class ResidualBlock3D(nn.Module):
+    def __init__(self, channels, dropout_rate=0.3):
+        super(ResidualBlock3D, self).__init__()
+        self.conv1 = ConvBlock3D(channels, channels)
+        self.dropout = nn.Dropout3d(p=dropout_rate)
+        self.conv2 = ConvBlock3D(channels, channels)
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.dropout(out)
+        out = self.conv2(out)
+        return out + residual
