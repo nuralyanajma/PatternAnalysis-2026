@@ -27,3 +27,24 @@ class ResidualBlock3D(nn.Module):
         out = self.dropout(out)
         out = self.conv2(out)
         return out + residual
+
+class UpsampleModule(nn.Module):
+
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.up = nn.Upsample(scale_factor=2, mode="nearest")
+        self.conv = ConvNormAct(in_ch, out_ch, kernel_size=3)
+
+    def forward(self, x):
+        return self.conv(self.up(x))
+
+
+class LocalisationModule(nn.Module):
+
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.conv3 = ConvNormAct(in_ch, out_ch, kernel_size=3)
+        self.conv1 = ConvNormAct(out_ch, out_ch, kernel_size=1)
+
+    def forward(self, x):
+        return self.conv1(self.conv3(x))
