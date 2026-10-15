@@ -49,3 +49,123 @@ class LocalisationModule(nn.Module):
 
     def forward(self, x):
         return self.conv1(self.conv3(x))
+
+
+
+class Improved3DUNet(nn.Module):
+
+    def __init__(self, in_channels=1, num_classes=6, base_channels=16,
+                 dropout=0.3, deep_supervision=True):
+        super().__init__()
+        b = base_channels
+        ch = [b, 2 * b, 4 * b, 8 * b, 16 * b]
+        self.deep_supervision = deep_supervision
+
+        # Encoder
+        self.enc0 = nn.Sequential(ConvNormAct(in_channels, ch[0]), ContextModule(ch[0], dropout))
+        self.down = nn.ModuleList([ConvNormAct(ch[i - 1], ch[i], stride=2) for i in range(1, 5)])
+        self.ctx = nn.ModuleList([ContextModule(ch[i], dropout) for i in range(1, 5)])
+
+        # Decoder
+        self.up4 = UpsampleModule(ch[4], ch[3])
+        self.loc3 = LocalisationModule(ch[3] * 2, ch[3])
+        self.up3 = UpsampleModule(ch[3], ch[2])
+        self.loc2 = LocalisationModule(ch[2] * 2, ch[2])
+        self.up2 = UpsampleModule(ch[2], ch[1])
+        self.loc1 = LocalisationModule(ch[1] * 2, ch[1])
+        self.up1 = UpsampleModule(ch[1], ch[0])
+        self.final_conv = ConvNormAct(ch[0] * 2, ch[1], kernel_size=3)
+
+        # Segmentation heads (1x1x1 convs)
+        self.seg0 = nn.Conv3d(ch[1], num_classes, kernel_size=1)  # full resolution
+        if deep_supervision:
+            self.seg1 = nn.Conv3d(ch[1], num_classes, kernel_size=1)  # 1/2 resolution
+            self.seg2 = nn.Conv3d(ch[2], num_classes, kernel_size=1)  # 1/4 resolution
+
+    @staticmethod
+    def _check_shape(x):
+        if any(s % 16 != 0 for s in x.shape[2:]):
+            raise ValueError(
+                f"Spatial dims must be divisible by 16, got {tuple(x.shape[2:])}")
+
+    def forward(self, x):
+        self._check_shape(x)
+
+        # Encoder
+        x0 = self.enc0(x)
+        feats = [x0]
+        h = x0
+        for down, ctx in zip(self.down, self.ctx):
+            h = down(h)
+            h = ctx(h)
+            feats.append(h)
+        x0, x1, x2, x3, x4 = feats
+
+        # Decoder
+        d3 = self.loc3(torch.cat([self.up4(x4), x3], dim=1))   # 1/8
+        d2 = self.loc2(torch.cat([self.up3(d3), x2], dim=1))   # 1/4
+        d1 = self.loc1(torch.cat([self.up2(d2), x1], dim=1))   # 1/2
+        d0 = self.final_conv(torch.cat([self.up1(d1), x0], dim=1))  # full
+
+        o0 = self.seg0(d0)
+        if not self.deep_supervision:
+            return o0
+
+        o1 = self.seg1(d1)
+        o2 = self.seg2(d2)
+        up = lambda t, **kw: F.interpolate(t, mode="trilinear", align_corners=False, **kw)
+        comb1 = up(o2, scale_factor=2) + o1          # 1/2 resolution
+        final = up(comb1, scale_factor=2) + o0       # full resolution
+
+        if self.training:
+            full = x.shape[2:]
+            return [final, up(comb1, size=full), up(o2, size=full)]
+        return final
+
+
+class DoubleConv(nn.Module):
+
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv3d(in_ch, out_ch, 3, padding=1, bias=False),
+            nn.BatchNorm3d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(out_ch, out_ch, 3, padding=1, bias=False),
+            nn.BatchNorm3d(out_ch),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        return self.block(x)
+
+
+class UNet3D(nn.Module):
+
+    def __init__(self, in_channels=1, num_classes=6, base_channels=16):
+        super().__init__()
+        b = base_channels
+        ch = [b, 2 * b, 4 * b, 8 * b, 16 * b]
+        self.encoders = nn.ModuleList(
+            [DoubleConv(in_channels, ch[0])] + [DoubleConv(ch[i - 1], ch[i]) for i in range(1, 5)])
+        self.pool = nn.MaxPool3d(2)
+        self.upconvs = nn.ModuleList(
+            [nn.ConvTranspose3d(ch[i], ch[i - 1], kernel_size=2, stride=2) for i in range(4, 0, -1)])
+        self.decoders = nn.ModuleList([DoubleConv(ch[i - 1] * 2, ch[i - 1]) for i in range(4, 0, -1)])
+        self.head = nn.Conv3d(ch[0], num_classes, kernel_size=1)
+
+    def forward(self, x):
+        if any(s % 16 != 0 for s in x.shape[2:]):
+            raise ValueError(f"Spatial dims must be divisible by 16, got {tuple(x.shape[2:])}")
+        skips = []
+        h = x
+        for i, enc in enumerate(self.encoders):
+            h = enc(h)
+            if i < len(self.encoders) - 1:
+                skips.append(h)
+                h = self.pool(h)
+        for up, dec, skip in zip(self.upconvs, self.decoders, reversed(skips)):
+            h = dec(torch.cat([up(h), skip], dim=1))
+        return self.head(h)
+
+
