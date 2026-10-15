@@ -168,4 +168,28 @@ class UNet3D(nn.Module):
             h = dec(torch.cat([up(h), skip], dim=1))
         return self.head(h)
 
+def build_model(name, in_channels=1, num_classes=6, base_channels=16,
+                dropout=0.3, deep_supervision=True):
+    """Factory: name is 'improved' or 'baseline'."""
+    if name == "improved":
+        return Improved3DUNet(in_channels, num_classes, base_channels, dropout, deep_supervision)
+    if name == "baseline":
+        return UNet3D(in_channels, num_classes, base_channels)
+    raise ValueError(f"Unknown model '{name}' (use 'improved' or 'baseline')")
+ 
+ 
+if __name__ == "__main__":
+    # Quick shape / parameter smoke test (no data needed).
+    for name in ("improved", "baseline"):
+        net = build_model(name, base_channels=8)
+        x = torch.randn(1, 1, 32, 32, 16)
+        net.train()
+        out = net(x)
+        shapes = [tuple(o.shape) for o in out] if isinstance(out, list) else tuple(out.shape)
+        net.eval()
+        with torch.no_grad():
+            ev = net(x)
+        print(name, "train out:", shapes, "| eval out:", tuple(ev.shape),
+              "| params:", sum(p.numel() for p in net.parameters()))
+
 
