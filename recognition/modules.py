@@ -2,34 +2,36 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class ConvBlock3D (nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(ConvBlock3D, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(num_groups=min(8, out_channels), num_channels=out_channels),
+class ConvNormAct(nn.Module): 
+    def __init__(self, in_ch, out_ch, kernel_size=3, stride=1):
+        super().__init__()
+        padding = kernel_size // 2
+        self.block = nn.Sequential(
+            nn.Conv3d(in_ch, out_ch, kernel_size, stride=stride, padding=padding, bias=False),
+            nn.InstanceNorm3d(out_ch, affine=True),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
         )
-
+ 
     def forward(self, x):
-        return self.conv(x)
+        return self.block(x)
 
-class ResidualBlock3D(nn.Module):
-    def __init__(self, channels, dropout_rate=0.3):
-        super(ResidualBlock3D, self).__init__()
-        self.conv1 = ConvBlock3D(channels, channels)
-        self.dropout = nn.Dropout3d(p=dropout_rate)
-        self.conv2 = ConvBlock3D(channels, channels)
-
+class ContextModule(nn.Module):
+    def __init__(self, channels, dropout=0.3):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.InstanceNorm3d(channels, affine=True),
+            nn.LeakyReLU(0.01, inplace=True),
+            nn.Conv3d(channels, channels, 3, padding=1, bias=False),
+            nn.Dropout3d(p=dropout),
+            nn.InstanceNorm3d(channels, affine=True),
+            nn.LeakyReLU(0.01, inplace=True),
+            nn.Conv3d(channels, channels, 3, padding=1, bias=False),
+        )
+ 
     def forward(self, x):
-        residual = x
-        out = self.conv1(x)
-        out = self.dropout(out)
-        out = self.conv2(out)
-        return out + residual
+        return x + self.block(x)
 
 class UpsampleModule(nn.Module):
-
     def __init__(self, in_ch, out_ch):
         super().__init__()
         self.up = nn.Upsample(scale_factor=2, mode="nearest")
@@ -40,7 +42,6 @@ class UpsampleModule(nn.Module):
 
 
 class LocalisationModule(nn.Module):
-
     def __init__(self, in_ch, out_ch):
         super().__init__()
         self.conv3 = ConvNormAct(in_ch, out_ch, kernel_size=3)
