@@ -83,3 +83,75 @@ def load_splits(path):
 def describe_splits(splits):
     for k, v in splits.items():
         print(f"{k:>5}: {len({p['patient'] for p in v}):3d} patients, {len(v):3d} volumes")
+
+def _load_nifti(path):
+    arr = nib.load(path).get_fdata(caching="unchanged")
+    if arr.ndim == 4:          # some HipMRI files carry an extra trailing dim
+        arr = arr[..., 0]
+    return torch.from_numpy(arr).float()
+ 
+ 
+class HipMRI3DDataset(Dataset):
+ 
+    def __init__(self, pairs, target_size=(128, 128, 64), num_classes=6,
+                 augment=False, flip_axes=(0,), cache=True):
+        if any(s % 16 for s in target_size):
+            raise ValueError("target_size dims must be divisible by 16")
+        self.pairs = pairs
+        self.target_size = tuple(target_size)
+        self.num_classes = num_classes
+        self.augment = augment
+        self.flip_axes = flip_axes   # axes are (D,H,W) of the stored volume; verify left-right axis
+        self._cache = {} if cache else None
+ 
+    def __len__(self):
+        return len(self.pairs)
+ 
+    def _load(self, idx):
+        if self._cache is not None and idx in self._cache:
+            return self._cache[idx]
+        p = self.pairs[idx]
+        img = _load_nifti(p["image"])
+        lab = _load_nifti(p["label"]).round().long()
+        if lab.min() < 0 or lab.max() >= self.num_classes:
+            raise ValueError(f"{p['label']}: label values {lab.unique().tolist()} "
+                             f"outside [0,{self.num_classes - 1}]")
+        img = (img - img.mean()) / (img.std() + 1e-8)
+        img = F.interpolate(img[None, None], size=self.target_size, mode="trilinear",
+                            align_corners=False)[0]
+        lab = F.interpolate(lab[None, None].float(), size=self.target_size,
+                            mode="nearest")[0, 0].long()
+        if self._cache is not None:
+            self._cache[idx] = (img, lab)
+        return img, lab
+ 
+    def __getitem__(self, idx):
+        img, lab = self._load(idx)
+        if self.augment:
+            img, lab = self._augment(img.clone(), lab.clone())
+        return img, lab
+ 
+    def _augment(self, img, lab):
+        for ax in self.flip_axes:                       # random flips
+            if random.random() < 0.5:
+                img = torch.flip(img, dims=[ax + 1])    # +1 for the channel dim
+                lab = torch.flip(lab, dims=[ax])
+        img = img * random.uniform(0.9, 1.1) + random.uniform(-0.1, 0.1)   # intensity jitter
+        if random.random() < 0.5:                       # gaussian noise
+            img = img + 0.05 * torch.randn_like(img)
+        return img, lab
+ 
+ 
+def get_dataloaders(root, splits=None, target_size=(128, 128, 64), batch_size=1,
+                    num_workers=0, num_classes=6, seed=42):
+    if splits is None:
+        splits = split_by_patient(find_pairs(root), seed=seed)
+    describe_splits(splits)
+    loaders = {}
+    for name, pairs in splits.items():
+        ds = HipMRI3DDataset(pairs, target_size, num_classes, augment=(name == "train"))
+        loaders[name] = DataLoader(ds, batch_size=batch_size if name == "train" else 1,
+                                   shuffle=(name == "train"), num_workers=num_workers,
+                                   persistent_workers=num_workers > 0,
+                                   pin_memory=torch.cuda.is_available())
+    return loaders, splits
