@@ -118,3 +118,5 @@ def evaluate(model, loader, device, num_classes, prostate_label=5, slice_axis=2,
     if return_per_case:
         result["per_case"] = per_case
     return result
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
