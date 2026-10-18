@@ -88,3 +88,69 @@ def main():
     best, ckpt_path = -1.0, os.path.join(args.out_dir, "best.pt")
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
+
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        running = 0.0
+        for img, lab in loaders["train"]:
+            img, lab = img.to(device, non_blocking=True), lab.to(device, non_blocking=True)
+            optimiser.zero_grad(set_to_none=True)
+            with torch.autocast(device_type=device.type, enabled=use_amp):
+                outputs = model(img)
+            # compute the loss in fp32 for numerical safety
+            if isinstance(outputs, (list, tuple)):
+                outputs = [o.float() for o in outputs]
+            else:
+                outputs = outputs.float()
+            loss = criterion(outputs, lab)
+            scaler.scale(loss).backward()
+            scaler.step(optimiser)
+            scaler.update()
+            running += loss.item()
+        scheduler.step()
+ 
+        val = evaluate(model, loaders["val"], device, num_classes, PROSTATE,
+                       args.slice_axis, criterion)
+        hist["train_loss"].append(running / len(loaders["train"]))
+        hist["val_loss"].append(val["loss"])
+        hist["val_fg_dice"].append(val["mean_fg_dice"])
+        hist["val_prostate_dice"].append(val["dice_per_class"][PROSTATE])
+        print(f"epoch {epoch:3d}/{args.epochs} | train loss {hist['train_loss'][-1]:.4f} | "
+              f"val loss {val['loss']:.4f} | val fg Dice {val['mean_fg_dice']:.4f} | "
+              f"val prostate Dice {val['dice_per_class'][PROSTATE]:.4f}")
+ 
+        score = val["dice_per_class"][PROSTATE]
+        if score == score and score > best:   # NaN-safe
+            best = score
+            torch.save({"model": model.state_dict(), "args": vars(args), "epoch": epoch,
+                        "val_prostate_dice": best}, ckpt_path)
+ 
+    train_peak_gb = (torch.cuda.max_memory_allocated() / 1024 ** 3) if device.type == "cuda" else None
+    with open(os.path.join(args.out_dir, "history.json"), "w") as f:
+        json.dump(hist, f)
+    plot_history(hist, os.path.join(args.out_dir, "curves.png"))
+ 
+    ckpt = torch.load(ckpt_path, map_location=device)
+    model.load_state_dict(ckpt["model"])
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+    test = evaluate(model, loaders["test"], device, num_classes, PROSTATE, args.slice_axis,
+                    criterion, return_per_case=True)
+    infer_peak_gb = (torch.cuda.max_memory_allocated() / 1024 ** 3) if device.type == "cuda" else None
+ 
+    print("\n=== TEST RESULTS (best val checkpoint, epoch %d) ===" % ckpt["epoch"])
+    for name, d, i in zip(CLASS_NAMES, test["dice_per_class"], test["iou_per_class"]):
+        print(f"{name:>10}: Dice {d:.4f} | IoU {i:.4f}")
+    print("prostate Dice by thirds of GT extent:", [f"{x:.4f}" for x in test["prostate_dice_thirds"]])
+    print(f"params {n_params:,} | train peak VRAM {train_peak_gb} GB | inference peak VRAM "
+          f"{infer_peak_gb} GB | mean inference {test['mean_inference_s']:.3f} s/volume")
+ 
+    test.update({"model": args.model, "parameters": n_params, "train_peak_vram_gb": train_peak_gb,
+                 "inference_peak_vram_gb": infer_peak_gb, "best_epoch": ckpt["epoch"],
+                 "class_names": CLASS_NAMES})
+    with open(os.path.join(args.out_dir, "test_results.json"), "w") as f:
+        json.dump(test, f, indent=2)
+ 
+ 
+if __name__ == "__main__":
+    main()
