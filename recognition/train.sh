@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=improved3d
-#SBATCH --partition=a100-a
+#SBATCH --partition=a100
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=6G
