@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=improved3d
-#SBATCH --partition=largecpu
+#SBATCH --partition=a100-test
 #SBATCH --gres=gpu:1
 #SBATCH --time=04:00:00
-#SBATCH --output=logs/improved_%j.out
+#SBATCH --output=logs/cpu_smoke_%j.out
 #SBATCH --error=logs/cpu_smoke_%j.err
 
 
