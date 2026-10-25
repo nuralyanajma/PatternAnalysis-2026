@@ -2,19 +2,19 @@ import argparse
 import json
 import os
 import random
- 
+import time
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
- 
+
 from dataset import CLASS_NAMES, get_dataloaders, load_splits, save_splits
 from modules import build_model
 from utils import DiceCELoss, count_parameters, evaluate
- 
+
 PROSTATE = CLASS_NAMES.index("prostate")
- 
- 
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--data-root", required=True)
@@ -34,14 +34,14 @@ def parse_args():
     p.add_argument("--no-amp", action="store_true", help="disable mixed precision")
     p.add_argument("--max-train", type=int, default=None, help="limit #train volumes (smoke test)")
     return p.parse_args()
- 
- 
+
+
 def set_seed(seed):
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
- 
- 
+
+
 def plot_history(hist, path):
     fig, ax = plt.subplots(1, 2, figsize=(11, 4))
     ax[0].plot(hist["train_loss"], label="train")
@@ -55,8 +55,8 @@ def plot_history(hist, path):
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
- 
- 
+
+
 def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
@@ -64,7 +64,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_classes = len(CLASS_NAMES)
     use_amp = device.type == "cuda" and not args.no_amp
- 
+
     splits = load_splits(args.split_file) if args.split_file else None
     if splits is not None and args.max_train:
         splits["train"] = splits["train"][:args.max_train]
@@ -74,22 +74,25 @@ def main():
     if args.max_train and not args.split_file:
         loaders["train"].dataset.pairs = loaders["train"].dataset.pairs[:args.max_train]
     save_splits(splits, os.path.join(args.out_dir, "splits.json"))
- 
+
     model = build_model(args.model, 1, num_classes, args.base_channels, args.dropout).to(device)
     n_params = count_parameters(model)
-    print(f"Model: {args.model} | trainable parameters: {n_params:,} | device: {device}")
- 
+    print(f"Model: {args.model} | trainable parameters: {n_params:,} | device: {device}", flush=True)
+
     criterion = DiceCELoss(num_classes)
     optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=args.epochs)
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
- 
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
     hist = {"train_loss": [], "val_loss": [], "val_fg_dice": [], "val_prostate_dice": []}
     best, ckpt_path = -1.0, os.path.join(args.out_dir, "best.pt")
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
 
+    t_start = time.time()
+    print(f"Starting training: {len(loaders['train'])} train batches/epoch", flush=True)
     for epoch in range(1, args.epochs + 1):
+        t_epoch = time.time()
         model.train()
         running = 0.0
         for img, lab in loaders["train"]:
@@ -108,28 +111,30 @@ def main():
             scaler.update()
             running += loss.item()
         scheduler.step()
- 
+
         val = evaluate(model, loaders["val"], device, num_classes, PROSTATE,
-                       args.slice_axis, criterion)
+                       args.slice_axis, criterion, boundary=False)
         hist["train_loss"].append(running / len(loaders["train"]))
         hist["val_loss"].append(val["loss"])
         hist["val_fg_dice"].append(val["mean_fg_dice"])
         hist["val_prostate_dice"].append(val["dice_per_class"][PROSTATE])
         print(f"epoch {epoch:3d}/{args.epochs} | train loss {hist['train_loss'][-1]:.4f} | "
               f"val loss {val['loss']:.4f} | val fg Dice {val['mean_fg_dice']:.4f} | "
-              f"val prostate Dice {val['dice_per_class'][PROSTATE]:.4f}")
- 
+              f"val prostate Dice {val['dice_per_class'][PROSTATE]:.4f} | "
+              f"{time.time() - t_epoch:.0f}s (total {(time.time() - t_start) / 60:.1f} min)", flush=True)
+
         score = val["dice_per_class"][PROSTATE]
         if score == score and score > best:   # NaN-safe
             best = score
             torch.save({"model": model.state_dict(), "args": vars(args), "epoch": epoch,
                         "val_prostate_dice": best}, ckpt_path)
- 
+
     train_peak_gb = (torch.cuda.max_memory_allocated() / 1024 ** 3) if device.type == "cuda" else None
     with open(os.path.join(args.out_dir, "history.json"), "w") as f:
         json.dump(hist, f)
     plot_history(hist, os.path.join(args.out_dir, "curves.png"))
- 
+
+    # ---- test with the best checkpoint ------------------------------------ #
     ckpt = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(ckpt["model"])
     if device.type == "cuda":
@@ -137,20 +142,23 @@ def main():
     test = evaluate(model, loaders["test"], device, num_classes, PROSTATE, args.slice_axis,
                     criterion, return_per_case=True)
     infer_peak_gb = (torch.cuda.max_memory_allocated() / 1024 ** 3) if device.type == "cuda" else None
- 
+
     print("\n=== TEST RESULTS (best val checkpoint, epoch %d) ===" % ckpt["epoch"])
-    for name, d, i in zip(CLASS_NAMES, test["dice_per_class"], test["iou_per_class"]):
-        print(f"{name:>10}: Dice {d:.4f} | IoU {i:.4f}")
+    for name, d, i, h, a, m, n in zip(CLASS_NAMES, test["dice_per_class"], test["iou_per_class"],
+                                     test["hd95_per_class"], test["asd_per_class"],
+                                     test["missed_per_class"], test["gt_present_per_class"]):
+        print(f"{name:>10}: Dice {d:.4f} | IoU {i:.4f} | HD95 {h:.2f} vox | ASD {a:.2f} vox | "
+              f"missed {m}/{n}")
     print("prostate Dice by thirds of GT extent:", [f"{x:.4f}" for x in test["prostate_dice_thirds"]])
     print(f"params {n_params:,} | train peak VRAM {train_peak_gb} GB | inference peak VRAM "
           f"{infer_peak_gb} GB | mean inference {test['mean_inference_s']:.3f} s/volume")
- 
+
     test.update({"model": args.model, "parameters": n_params, "train_peak_vram_gb": train_peak_gb,
                  "inference_peak_vram_gb": infer_peak_gb, "best_epoch": ckpt["epoch"],
                  "class_names": CLASS_NAMES})
     with open(os.path.join(args.out_dir, "test_results.json"), "w") as f:
         json.dump(test, f, indent=2)
- 
- 
+
+
 if __name__ == "__main__":
     main()

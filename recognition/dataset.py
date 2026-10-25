@@ -3,12 +3,12 @@ import json
 import os
 import random
 import re
- 
+
 import nibabel as nib
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
- 
+
 PATIENT_RE = re.compile(r"^([A-Za-z]+_?\d+)")
 WEEK_RE = re.compile(r"(Week\d+)", re.IGNORECASE)
 CLASS_NAMES = ["background", "body", "bone", "bladder", "rectum", "prostate"]
@@ -19,8 +19,8 @@ def _key(path):
     w = WEEK_RE.search(name)
     stem = name.split(".")[0]
     return (p.group(1) if p else stem, w.group(1) if w else "")
- 
- 
+
+
 def find_pairs(root):
     img_files = sorted(glob.glob(os.path.join(root, "semantic_MRs", "*.nii*")))
     lab_files = sorted(glob.glob(os.path.join(root, "semantic_labels_only", "*.nii*")))
@@ -38,8 +38,8 @@ def find_pairs(root):
     if unmatched:
         print(f"WARNING: {len(unmatched)} image(s) had no matching label, e.g. {unmatched[0]}")
     return pairs
- 
- 
+
+
 def split_by_patient(pairs, val_frac=0.15, test_frac=0.15, seed=42):
     patients = sorted({p["patient"] for p in pairs})
     random.Random(seed).shuffle(patients)
@@ -56,8 +56,8 @@ def split_by_patient(pairs, val_frac=0.15, test_frac=0.15, seed=42):
     }
     check_no_leakage(splits)
     return splits
- 
- 
+
+
 def check_no_leakage(splits):
     sets = {k: {p["patient"] for p in v} for k, v in splits.items()}
     names = list(sets)
@@ -66,20 +66,20 @@ def check_no_leakage(splits):
             overlap = sets[names[i]] & sets[names[j]]
             if overlap:
                 raise AssertionError(f"Patient leakage between {names[i]} and {names[j]}: {sorted(overlap)}")
- 
- 
+
+
 def save_splits(splits, path):
     with open(path, "w") as f:
         json.dump(splits, f, indent=2)
- 
- 
+
+
 def load_splits(path):
     with open(path) as f:
         splits = json.load(f)
     check_no_leakage(splits)
     return splits
- 
- 
+
+
 def describe_splits(splits):
     for k, v in splits.items():
         print(f"{k:>5}: {len({p['patient'] for p in v}):3d} patients, {len(v):3d} volumes")
@@ -89,10 +89,10 @@ def _load_nifti(path):
     if arr.ndim == 4:          # some HipMRI files carry an extra trailing dim
         arr = arr[..., 0]
     return torch.from_numpy(arr).float()
- 
- 
+
+
 class HipMRI3DDataset(Dataset):
- 
+
     def __init__(self, pairs, target_size=(128, 128, 64), num_classes=6,
                  augment=False, flip_axes=(0,), cache=True):
         if any(s % 16 for s in target_size):
@@ -103,10 +103,10 @@ class HipMRI3DDataset(Dataset):
         self.augment = augment
         self.flip_axes = flip_axes   # axes are (D,H,W) of the stored volume; verify left-right axis
         self._cache = {} if cache else None
- 
+
     def __len__(self):
         return len(self.pairs)
- 
+
     def _load(self, idx):
         if self._cache is not None and idx in self._cache:
             return self._cache[idx]
@@ -124,13 +124,13 @@ class HipMRI3DDataset(Dataset):
         if self._cache is not None:
             self._cache[idx] = (img, lab)
         return img, lab
- 
+
     def __getitem__(self, idx):
         img, lab = self._load(idx)
         if self.augment:
             img, lab = self._augment(img.clone(), lab.clone())
         return img, lab
- 
+
     def _augment(self, img, lab):
         for ax in self.flip_axes:                       # random flips
             if random.random() < 0.5:
@@ -140,13 +140,17 @@ class HipMRI3DDataset(Dataset):
         if random.random() < 0.5:                       # gaussian noise
             img = img + 0.05 * torch.randn_like(img)
         return img, lab
- 
- 
+
+
 def get_dataloaders(root, splits=None, target_size=(128, 128, 64), batch_size=1,
                     num_workers=0, num_classes=6, seed=42):
     if splits is None:
         splits = split_by_patient(find_pairs(root), seed=seed)
     describe_splits(splits)
+    for name, pairs in splits.items():
+        if not pairs:
+            raise ValueError(f"'{name}' split is empty - check file-name matching in "
+                             "dataset.py (PATIENT_RE / WEEK_RE)")
     loaders = {}
     for name, pairs in splits.items():
         ds = HipMRI3DDataset(pairs, target_size, num_classes, augment=(name == "train"))
