@@ -7,7 +7,7 @@
 
 source $HOME/miniconda3/bin/activate
 conda activate torch
-cd ~/PatternAnalysis-2026/recognition/logs
+cd ~/PatternAnalysis-2026/recognition
 # activate your Python environment here
 
 python train.py --data-root /home/groups/comp3710/HipMRI_Study_open \
