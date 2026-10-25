@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=improved3d
-#SBATCH --partition=cosc3500
+#SBATCH --partition=a100
 #SBATCH --gres=gpu:1
 #SBATCH --time=10:00:00
 #SBATCH --output=logs/cpu_smoke_%j.out
