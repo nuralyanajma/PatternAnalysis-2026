@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
  
-PATIENT_RE = re.compile(r"(Case_\d+)", re.IGNORECASE)
+PATIENT_RE = re.compile(r"^([A-Za-z]+_?\d+)")
 WEEK_RE = re.compile(r"(Week\d+)", re.IGNORECASE)
 CLASS_NAMES = ["background", "body", "bone", "bladder", "rectum", "prostate"]
 
