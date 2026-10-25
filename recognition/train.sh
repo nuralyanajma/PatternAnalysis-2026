@@ -2,7 +2,7 @@
 #SBATCH --job-name=improved3d
 #SBATCH --partition=a100
 #SBATCH --gres=gpu:1
-#SBATCH --time=10:00:00
+#SBATCH --time=15:00:00
 #SBATCH --output=logs/cpu_smoke_%j.out
 #SBATCH --error=logs/cpu_smoke_%j.err
 
