@@ -11,6 +11,5 @@ source $HOME/miniconda3/bin/activate
 conda activate torch
 cd ~/PatternAnalysis-2026/recognition
 
-python -u train.py --data-root /home/groups/comp3710/HipMRI_Study_open \
-    --model baseline --out-dir runs/baseline \
-    --split-file runs/improved/splits.json
+python compare.py --improved runs/improved/test_results.json \
+    --baseline runs/baseline/test_results.json --out-dir comparison
