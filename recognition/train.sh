@@ -11,5 +11,12 @@ source $HOME/miniconda3/bin/activate
 conda activate torch
 cd ~/PatternAnalysis-2026/recognition
 
-python compare.py --improved runs/improved/test_results.json \
-    --baseline runs/baseline/test_results.json --out-dir comparison
+CASES="J026_Week1 T014_Week2 T014_Week1 J026_Week7 J026_Week6"
+
+python predict.py --checkpoint runs/improved/best.pt \
+    --split-file runs/improved/splits.json \
+    --out-dir predictions/improved --cases $CASES
+
+python predict.py --checkpoint runs/baseline/best.pt \
+    --split-file runs/improved/splits.json \
+    --out-dir predictions/baseline --cases $CASES
